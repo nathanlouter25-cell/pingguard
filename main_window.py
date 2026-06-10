@@ -9,50 +9,9 @@ from PyQt6.QtWidgets import (
     QTextEdit, QFileDialog, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize
-from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QIcon, QPixmap
+from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QIcon, QPixmap, QBrush, QPolygonF
+from PyQt6.QtCore import QPointF
 from games import get_ping_status, DEFAULT_GAMES
-
-
-def ui_font(size, weight=None):
-    """Cross-platform sans-serif UI font."""
-    import sys
-    if sys.platform == "darwin":
-        family = "-apple-system"
-    elif sys.platform.startswith("linux"):
-        family = "Ubuntu, Noto Sans, DejaVu Sans, sans-serif"
-    else:
-        family = "Segoe UI"
-    f = QFont(family, size)
-    if weight:
-        f.setWeight(weight)
-    return f
-
-
-def mono_font(size, weight=None):
-    """Cross-platform monospace font for ping numbers."""
-    import sys
-    if sys.platform == "darwin":
-        family = "Menlo"
-    elif sys.platform.startswith("linux"):
-        family = "DejaVu Sans Mono, Liberation Mono, monospace"
-    else:
-        family = "Consolas"
-    f = QFont(family, size)
-    if weight:
-        f.setWeight(weight)
-    return f
-
-
-def emoji_font(size):
-    """Cross-platform emoji font."""
-    import sys
-    if sys.platform == "darwin":
-        family = "Apple Color Emoji"
-    elif sys.platform.startswith("linux"):
-        family = "Noto Color Emoji, Segoe UI Emoji"
-    else:
-        family = "Segoe UI Emoji"
-    return QFont(family, size)
 from add_game_dialog import AddGameDialog
 from report_dialog import ReportDialog
 import datetime
@@ -88,7 +47,6 @@ class PingBar(QWidget):
             y = h - margin - ((val - min_val) / (max_val - min_val)) * (h - 2 * margin)
             points.append((x, y))
 
-        # Color based on last ping
         _, color = get_ping_status(self.history[-1])
         pen = QPen(QColor(color), 1.5)
         painter.setPen(pen)
@@ -99,7 +57,7 @@ class PingBar(QWidget):
 
 
 class PingDot(QWidget):
-    """Pulsing status dot."""
+    """Status dot."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.color = "#888888"
@@ -117,14 +75,127 @@ class PingDot(QWidget):
         painter.drawEllipse(2, 2, 10, 10)
 
 
+class PingHistoryChart(QWidget):
+    """Expanded full ping history chart with filled area, gridlines, stats."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.history = []   # list of ms values (ints)
+        self.color = "#00e676"
+        self.setMinimumHeight(110)
+        self.setMaximumHeight(110)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_history(self, history, color):
+        self.history = [h.get("ms") for h in history if h.get("ms") is not None]
+        self.color = color
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        w, h = self.width(), self.height()
+        left_margin = 28
+        right_margin = 8
+        top_margin = 10
+        bottom_margin = 22   # room for stats text
+
+        chart_w = w - left_margin - right_margin
+        chart_h = h - top_margin - bottom_margin
+
+        # Background
+        painter.fillRect(0, 0, w, h, QColor("#13131f"))
+
+        if not self.history or len(self.history) < 2:
+            painter.setPen(QColor("#444466"))
+            painter.drawText(0, 0, w, h, Qt.AlignmentFlag.AlignCenter, "No data yet")
+            return
+
+        max_val = max(max(self.history), 100)
+        min_val = 0
+
+        # Gridlines + Y labels
+        grid_pen = QPen(QColor("#1e1e35"), 1)
+        grid_pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(grid_pen)
+        label_font = QFont("Consolas", 7)
+        painter.setFont(label_font)
+
+        for grid_val in [0, 50, 100, 150, 200]:
+            if grid_val > max_val * 1.1:
+                continue
+            y = top_margin + chart_h - (grid_val / max_val) * chart_h
+            painter.setPen(grid_pen)
+            painter.drawLine(left_margin, int(y), left_margin + chart_w, int(y))
+            painter.setPen(QColor("#444466"))
+            painter.drawText(0, int(y) - 6, left_margin - 2, 12,
+                             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                             str(grid_val))
+
+        # Build points
+        points = []
+        for i, val in enumerate(self.history):
+            x = left_margin + (i / (len(self.history) - 1)) * chart_w
+            y = top_margin + chart_h - ((val - min_val) / (max_val - min_val)) * chart_h
+            points.append(QPointF(x, y))
+
+        # Filled area under the line
+        fill_color = QColor(self.color)
+        fill_color.setAlpha(35)
+        poly = QPolygonF()
+        poly.append(QPointF(points[0].x(), top_margin + chart_h))
+        for p in points:
+            poly.append(p)
+        poly.append(QPointF(points[-1].x(), top_margin + chart_h))
+        painter.setBrush(QBrush(fill_color))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawPolygon(poly)
+
+        # Line
+        line_pen = QPen(QColor(self.color), 1.8)
+        line_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        line_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(line_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for i in range(len(points) - 1):
+            painter.drawLine(points[i], points[i + 1])
+
+        # Dot at last point
+        painter.setBrush(QBrush(QColor(self.color)))
+        painter.setPen(Qt.PenStyle.NoPen)
+        lp = points[-1]
+        painter.drawEllipse(lp, 3.5, 3.5)
+
+        # Stats bar at bottom
+        stats_y = h - bottom_margin + 6
+        painter.setFont(QFont("Consolas", 8))
+        painter.setPen(QColor("#667788"))
+
+        mn = min(self.history)
+        avg = int(sum(self.history) / len(self.history))
+        mx = max(self.history)
+        samples = len(self.history)
+
+        stats_text = f"min {mn}ms    avg {avg}ms    max {mx}ms    samples {samples}"
+        painter.drawText(left_margin, stats_y, chart_w, 14,
+                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                         stats_text)
+
+
 class GameRow(QFrame):
-    """A single game row in the list."""
+    """A single game row — click to expand/collapse ping history chart."""
     report_clicked = pyqtSignal(dict)
 
     def __init__(self, game, parent=None):
         super().__init__(parent)
         self.game = game
+        self._expanded = False
+        self._history = []
+        self._last_ms = None
+        self._last_color = "#888888"
+
         self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet("""
             GameRow {
                 background: #1e1e2e;
@@ -132,50 +203,52 @@ class GameRow(QFrame):
                 margin: 2px 0;
             }
             GameRow:hover {
-                background: #262637;
+                background: #222235;
             }
         """)
 
-        layout = QHBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # ── Top row ──────────────────────────────────────────────
+        top_widget = QWidget()
+        top_widget.setStyleSheet("background: transparent;")
+        layout = QHBoxLayout(top_widget)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(10)
 
-        # Status dot
         self.dot = PingDot()
         layout.addWidget(self.dot)
 
-        # Icon + Name
         icon_label = QLabel(game.get("icon", "🎮"))
-        icon_label.setFont(emoji_font(16))
+        icon_label.setFont(QFont("Segoe UI Emoji", 16))
         icon_label.setFixedWidth(28)
         layout.addWidget(icon_label)
 
         name_layout = QVBoxLayout()
         name_layout.setSpacing(1)
         self.name_label = QLabel(game["name"])
-        self.name_label.setFont(ui_font(10, QFont.Weight.Bold))
+        self.name_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self.name_label.setStyleSheet("color: #e0e0e0;")
         self.category_label = QLabel(game.get("category", "") + " • " + game.get("region_note", ""))
-        self.category_label.setFont(ui_font(8))
+        self.category_label.setFont(QFont("Segoe UI", 8))
         self.category_label.setStyleSheet("color: #666680;")
         name_layout.addWidget(self.name_label)
         name_layout.addWidget(self.category_label)
         layout.addLayout(name_layout)
         layout.addStretch()
 
-        # Sparkline
         self.spark = PingBar()
         layout.addWidget(self.spark)
 
-        # Ping value
         self.ping_label = QLabel("—")
-        self.ping_label.setFont(mono_font(13, QFont.Weight.Bold))
+        self.ping_label.setFont(QFont("Consolas", 13, QFont.Weight.Bold))
         self.ping_label.setStyleSheet("color: #888888;")
         self.ping_label.setFixedWidth(65)
         self.ping_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(self.ping_label)
 
-        # Report button (hidden until hover)
         self.report_btn = QPushButton("⚠")
         self.report_btn.setToolTip("Report this game isn't working correctly")
         self.report_btn.setFixedSize(28, 28)
@@ -193,8 +266,48 @@ class GameRow(QFrame):
                 color: #ff9800;
             }
         """)
-        self.report_btn.clicked.connect(lambda: self.report_clicked.emit(self.game))
+        self.report_btn.clicked.connect(self._on_report_clicked)
         layout.addWidget(self.report_btn)
+
+        outer.addWidget(top_widget)
+
+        # ── Expanded chart panel ──────────────────────────────────
+        self.chart_panel = QWidget()
+        self.chart_panel.setStyleSheet("background: transparent;")
+        chart_layout = QVBoxLayout(self.chart_panel)
+        chart_layout.setContentsMargins(12, 0, 12, 8)
+        chart_layout.setSpacing(2)
+
+        self.chart_label = QLabel("▴ ping history")
+        self.chart_label.setFont(QFont("Segoe UI", 7))
+        self.chart_label.setStyleSheet("color: #444466;")
+        chart_layout.addWidget(self.chart_label)
+
+        self.chart = PingHistoryChart()
+        chart_layout.addWidget(self.chart)
+
+        self.chart_panel.hide()
+        outer.addWidget(self.chart_panel)
+
+    def _on_report_clicked(self):
+        self.report_clicked.emit(self.game)
+
+    def mousePressEvent(self, event):
+        # Don't toggle if clicking the report button
+        if self.report_btn.underMouse():
+            return
+        self._toggle_expand()
+        super().mousePressEvent(event)
+
+    def _toggle_expand(self):
+        self._expanded = not self._expanded
+        if self._expanded:
+            self.chart.set_history(self._history, self._last_color)
+            self.chart_panel.show()
+            self.chart_label.setText("▾ ping history")
+        else:
+            self.chart_panel.hide()
+            self.chart_label.setText("▴ ping history")
 
     def enterEvent(self, event):
         self.report_btn.setVisible(True)
@@ -206,6 +319,10 @@ class GameRow(QFrame):
 
     def update_ping(self, ms, history):
         status, color = get_ping_status(ms)
+        self._last_ms = ms
+        self._last_color = color
+        self._history = history
+
         self.dot.set_color(color)
         self.spark.set_history(history)
 
@@ -215,6 +332,10 @@ class GameRow(QFrame):
         else:
             self.ping_label.setText("—")
             self.ping_label.setStyleSheet("color: #555566;")
+
+        # Refresh chart if expanded
+        if self._expanded:
+            self.chart.set_history(history, color)
 
 
 class MainWindow(QMainWindow):
@@ -245,7 +366,7 @@ class MainWindow(QMainWindow):
         # Header
         header = QHBoxLayout()
         title = QLabel("🎮 PingGuard")
-        title.setFont(ui_font(18, QFont.Weight.Bold))
+        title.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
         title.setStyleSheet("color: #e0e0ff;")
         header.addWidget(title)
         header.addStretch()
@@ -254,7 +375,6 @@ class MainWindow(QMainWindow):
         self.status_label.setStyleSheet("color: #666680; font-size: 11px;")
         header.addWidget(self.status_label)
 
-        # Buttons
         self.check_btn = QPushButton("Check Now")
         self.check_btn.setFixedHeight(34)
         self.check_btn.setStyleSheet(self._button_style("#4c4cff", "#6666ff"))
@@ -321,12 +441,10 @@ class MainWindow(QMainWindow):
 
         main_layout.addLayout(bottom)
 
-        # Populate game rows
         self._populate_games()
 
     def _populate_games(self):
-        # Clear existing
-        while self.games_layout.count() > 1:  # keep stretch
+        while self.games_layout.count() > 1:
             item = self.games_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
@@ -338,7 +456,6 @@ class MainWindow(QMainWindow):
             row = GameRow(game)
             row.report_clicked.connect(self._on_report)
 
-            # Restore last known ping
             if game.get("last_ping") is not None:
                 row.update_ping(game["last_ping"], game.get("ping_history", []))
 
@@ -346,7 +463,6 @@ class MainWindow(QMainWindow):
             self.games_layout.insertWidget(self.games_layout.count() - 1, row)
 
     def update_game_ping(self, result):
-        """Called when a ping result comes in."""
         row = self.game_rows.get(result.game_name)
         if row:
             game = next((g for g in self.game_manager.games if g["name"] == result.game_name), None)
